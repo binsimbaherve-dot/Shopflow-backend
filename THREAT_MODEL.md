@@ -227,3 +227,104 @@ update this document:
 - OWASP Top 10 (2021): https://owasp.org/Top10/
 - Microsoft STRIDE: https://learn.microsoft.com/en-us/azure/security/develop/threat-modeling-tool-threats
 - OWASP API Security Top 10: https://owasp.org/API-Security/editions/2023/en/0x00-header/
+
+---
+
+## 8. v2 Furniture Vertical Addendum
+
+**Added:** 2026-05-24
+**Reason:** ShopFlow pivoted to a space-saving furniture marketplace vertical. New attack surface introduced by configurable products (variant matrix), made-to-order production workflow, delivery slot scheduling, and white-glove delivery PII. This addendum extends the v1 model rather than rewriting it; the v1 body remains valid except where explicitly updated in §8.4.
+
+### 8.1 New components
+
+| Component | Technology | Hosting | Trust level |
+|-----------|------------|---------|-------------|
+| Variant configurator service | Spring Boot module | Same as API | Trusted |
+| Delivery scheduling service | Spring Boot module | Same as API | Trusted |
+| Lead time calculator | Spring Boot module | Same as API | Trusted |
+| Production capacity admin | Admin sub-system | Same as API | Trusted, admin-only |
+
+No new trust boundaries introduced — variant, scheduling, and lead-time logic all live behind the existing Internet → Backend boundary. The Admin actor's elevated privilege over production capacity warrants extra scrutiny (see E-07).
+
+### 8.2 New assets
+
+| Asset | Confidentiality | Integrity | Availability |
+|-------|----------------|-----------|--------------|
+| Variant matrix and pricing rules | Medium | **Critical** | High |
+| Production capacity schedule | Low | High | Medium |
+| Delivery slot reservations | Low | High | High |
+| White-glove delivery PII (truck access, lift codes, parking notes, stairs count) | **High** | Medium | Low |
+
+The white-glove PII materially bumps the overall PII risk profile — it includes building-access information that has physical-security value beyond what email or shipping address alone provides.
+
+### 8.3 New STRIDE entries
+
+#### 8.3.1 Spoofing
+| ID | Threat | Component | L | I | Rating | Mitigation |
+|----|--------|-----------|---|---|--------|------------|
+| S-07 | Attacker replays a legitimately captured Stripe webhook after the initial event, triggering duplicate order fulfilment | Webhook | M | H | **High** | Verify signature timestamp within tolerance window; persist processed event IDs with UNIQUE constraint and reject duplicates (s3_1 expanded) |
+| S-08 | Username enumeration via differing login error messages or response timings | Auth | H | M | **High** | Identical error text ("Invalid credentials") for both "user not found" and "wrong password"; perform dummy bcrypt comparison when user doesn't exist to equalise timing |
+
+#### 8.3.2 Tampering
+| ID | Threat | Component | L | I | Rating | Mitigation |
+|----|--------|-----------|---|---|--------|------------|
+| T-08 | Client submits a `variant_id` belonging to a different product, or a mismatched variant/price pair, to buy an expensive variant at a cheap variant's price | Cart, Order | H | Critical | **Critical** | Server re-fetches variant from DB, verifies parent product match, derives price from server-side variant lookup — never trust client-supplied price or variant/product pairing (b2_6 + t2_7) |
+| T-09 | Supply-chain attack via compromised Maven or npm dependency injects malicious code at build time | Dependencies | L | Critical | **High** | Dependabot + Snyk on every PR (s0_3, s3_4); OWASP Dependency-Check stage in CI (s3_3); Trivy container scan (s4_3); SBOM per release (s4_5). Moved from §5 Out-of-Scope to a tracked threat. |
+
+#### 8.3.3 Repudiation
+| ID | Threat | Component | L | I | Rating | Mitigation |
+|----|--------|-----------|---|---|--------|------------|
+| R-05 | Stripe webhook handler processes the same event twice (retry storm or replay), creating duplicate orders/refunds with no easy reconciliation | Webhook | M | H | **High** | Persist `stripe_event_id` with UNIQUE DB constraint on first arrival; return 200 on duplicate without re-processing (s3_1 expanded) |
+| R-06 | The audit log table itself is modifiable by the API's DB user, undermining R-02's "immutable" claim | Admin, DB | L | Critical | **High** | Separate DB role with INSERT-only privilege on audit tables; revoke UPDATE and DELETE on that role; verified by JDBC test (t4_5 expanded) |
+
+#### 8.3.4 Information Disclosure
+| ID | Threat | Component | L | I | Rating | Mitigation |
+|----|--------|-----------|---|---|--------|------------|
+| I-09 | White-glove delivery PII (lift codes, parking notes, truck access, stairs count) leaks via logs, error responses, or admin UI — high physical-security impact | Delivery, Logging | M | H | **High** | Field-level access control on delivery details; redact in logs (extension of I-06); admin UI gated by elevated role; consider field-level encryption at rest for free-text access fields |
+| I-10 | Developer workstation compromised; local `.env` files leak DB credentials, JWT signing secret, Stripe keys | Dev workstation | L | Critical | **High** | Full-disk encryption on dev laptops; OS keychain or vault for shared secrets rather than `.env` on disk; rotate any secret on laptop loss. Relevant to dual-laptop workflow. |
+
+#### 8.3.5 Denial of Service
+| ID | Threat | Component | L | I | Rating | Mitigation |
+|----|--------|-----------|---|---|--------|------------|
+| D-07 | Two customers concurrently book the same delivery slot, or a single customer races to over-reserve slots | Delivery scheduling | M | M | **Medium** | Optimistic locking with version field on `delivery_slots`, or pessimistic row lock during reservation; concurrent-booking stress test (t3_7) |
+| D-08 | Production queue exhaustion: attacker fills baskets with MTO items and abandons checkout, locking production slots from legitimate buyers | Production queue | M | M | **Medium** | Production slot reservation deferred until payment success (not at cart-add); abandoned-cart slot release within 15 minutes |
+
+#### 8.3.6 Elevation of Privilege
+| ID | Threat | Component | L | I | Rating | Mitigation |
+|----|--------|-----------|---|---|--------|------------|
+| E-07 | Admin manipulates production capacity to delay competitor orders or oversell, then alters audit trail | Production capacity admin | L | H | **Medium** | All production capacity changes logged with old value, new value, admin user, timestamp; audit-log integrity governed by R-06 (s4_4 expanded) |
+
+### 8.4 Updates to existing entries
+
+- **R-02:** "Immutable audit log" now references R-06 for the integrity mechanism — the table is immutable because of DB role constraints, not because the application promises not to delete.
+- **I-06:** PII redaction list expanded to cover white-glove delivery fields (lift codes, parking notes, stairs, truck access).
+- **Asset CIA bumps:** Audit logs Confidentiality Medium → **High** (contains user IDs, IPs, action history — PII by aggregation). Admin role assignments Confidentiality Medium → **High** (knowing who's an admin makes them targets).
+- **§5 Out of Scope, supply chain bullet:** removed. Now tracked as T-09.
+
+### 8.5 Updated risk summary
+
+| Rating | v1 count | v2 count |
+|--------|----------|----------|
+| Critical | 9 | 10 |
+| High | 20 | 27 |
+| Medium | 11 | 13 |
+| Low | 0 | 0 |
+| **Total** | **40** | **50** |
+
+### 8.6 POPIA framing
+
+POPIA is no longer out-of-scope. ShopFlow stores PII (email, delivery addresses, now building-access details) and operates from South Africa. Minimum-viable POPIA controls are implemented continuously rather than deferred:
+
+- Lawful basis for processing documented in privacy policy (to be drafted).
+- Data subject rights (access, deletion) supported via admin endpoints.
+- Breach notification process: incident-response runbook (s6_2) covers PII breach scenario.
+- Information Officer appointed: Herve Binsimba (self, solo project; revisit on team growth).
+- Full POPIA compliance review remains a separate workstream.
+
+### 8.7 Re-review trigger added
+
+Added to §6 Review Cadence: any change to the variant matrix structure, delivery scheduling rules, or production capacity model triggers a threat-model re-review.
+
+---
+
+*End of v2 addendum.*
