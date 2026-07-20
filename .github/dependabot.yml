@@ -1,0 +1,38 @@
+# ============================================================================
+# Dependabot configuration for shopflow-backend
+# ============================================================================
+# Scans dependencies weekly and opens PRs for security fixes and updates.
+# Covers Maven (Java/Spring Boot), Docker base images, and GitHub Actions
+# versions.
+
+version: 2
+updates:
+  # Maven dependencies (pom.xml) — will activate once Spring Boot is scaffolded
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+
+  # Docker base images (Dockerfile)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+
+  # GitHub Actions versions used in workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
